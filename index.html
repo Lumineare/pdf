@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kompresor PDF Lokal (Dengan Estimasi)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+            width: 420px;
+            text-align: center;
+        }
+        h2 { color: #333; margin-top: 0; }
+        .file-upload { margin-bottom: 20px; }
+        .file-upload input { width: 100%; padding: 10px; background: #f0f0f0; border-radius: 6px;}
+        
+        .estimation-box {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 15px;
+            border: 1px solid #bee5eb;
+        }
+
+        .slider-group {
+            text-align: left;
+            margin-bottom: 20px;
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #eee;
+        }
+        .slider-group label {
+            font-weight: bold;
+            color: #555;
+            display: flex;
+            justify-content: space-between;
+        }
+        input[type=range] {
+            width: 100%;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+        button {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.3s;
+        }
+        button:hover { background-color: #218838; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #status { margin-top: 15px; font-size: 14px; color: #666; font-weight: bold;}
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🗜️ Kompres PDF Lokal</h2>
+    
+    <div class="file-upload">
+        <input type="file" id="pdfInput" accept="application/pdf">
+    </div>
+
+    <div class="estimation-box" id="estimationBox">
+        ℹ️ Pilih file PDF untuk melihat estimasi ukuran.
+    </div>
+
+    <div class="slider-group">
+        <label>
+            Resolusi (DPI)
+            <span id="dpiValue">100</span>
+        </label>
+        <input type="range" id="dpiSlider" min="50" max="200" value="100" step="10">
+    </div>
+
+    <div class="slider-group">
+        <label>
+            Kualitas Foto
+            <span id="qualityValue">40%</span>
+        </label>
+        <input type="range" id="qualitySlider" min="10" max="100" value="40" step="5">
+    </div>
+
+    <button id="compressBtn" onclick="mulaiKompresi()" disabled>Mulai Kompres & Unduh</button>
+    <div id="status"></div>
+</div>
+
+<script>
+    // Setel worker untuk PDF.js
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+    let loadedPdf = null;
+    let fileAsli = null;
+
+    const dpiSlider = document.getElementById('dpiSlider');
+    const qualitySlider = document.getElementById('qualitySlider');
+    const estBox = document.getElementById('estimationBox');
+    const compressBtn = document.getElementById('compressBtn');
+
+    // 1. Saat File Dipilih
+    document.getElementById('pdfInput').addEventListener('change', async function(e) {
+        fileAsli = e.target.files[0];
+        if (!fileAsli) return;
+        
+        estBox.innerHTML = '⏳ Membaca halaman dokumen...';
+        compressBtn.disabled = true;
+
+        const arrayBuffer = await fileAsli.arrayBuffer();
+        loadedPdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        
+        compressBtn.disabled = false;
+        hitungEstimasi(); // Langsung hitung estimasi awal
+    });
+
+    // 2. Efek Angka Berubah (Realtime saat digeser)
+    dpiSlider.addEventListener('input', () => { document.getElementById('dpiValue').textContent = dpiSlider.value; });
+    qualitySlider.addEventListener('input', () => { document.getElementById('qualityValue').textContent = qualitySlider.value + '%'; });
+
+    // 3. Efek Hitung Estimasi (Saat slider dilepas/berhenti digeser agar tidak lag)
+    dpiSlider.addEventListener('change', hitungEstimasi);
+    qualitySlider.addEventListener('change', hitungEstimasi);
+
+    // FUNGSI MENGHITUNG ESTIMASI (Preview Size)
+    async function hitungEstimasi() {
+        if (!loadedPdf) return;
+        
+        estBox.innerHTML = '⚙️ Menghitung estimasi...';
+
+        try {
+            // Ambil halaman 1 sebagai sampel representatif
+            const page = await loadedPdf.getPage(1);
+            
+            const dpi = parseInt(dpiSlider.value);
+            const quality = parseInt(qualitySlider.value) / 100;
+            const scale = dpi / 72.0;
+
+            const viewport = page.getViewport({ scale: scale });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+
+            await page.render({ canvasContext: context, viewport: viewport }).promise;
+
+            // Konversi canvas ke format JPEG base64
+            const imgData = canvas.toDataURL('image/jpeg', quality);
+            
+            // Hitung ukuran data gambar dalam byte (Rumus ukuran base64)
+            const base64str = imgData.split(',')[1];
+            const byteSizePerHalaman = Math.round((base64str.length * 3) / 4);
+            
+            // Estimasi = (Ukuran 1 hal x Total hal) + Overhead struktur PDF (~1KB per hal)
+            const estimasiTotalByte = (byteSizePerHalaman * loadedPdf.numPages) + (loadedPdf.numPages * 1024);
+            const estimasiMB = (estimasiTotalByte / (1024 * 1024)).toFixed(2);
+            
+            estBox.innerHTML = `📊 Estimasi Ukuran: <b>~${estimasiMB} MB</b><br><small style="font-weight:normal; color:#0c5460;">(Total ${loadedPdf.numPages} halaman)</small>`;
+
+        } catch (error) {
+            console.error("Gagal estimasi:", error);
+            estBox.innerHTML = '⚠️ Gagal menghitung estimasi.';
+        }
+    }
+
+    // FUNGSI UTAMA KOMPRESI
+    async function mulaiKompresi() {
+        if (!loadedPdf || !fileAsli) return;
+
+        const status = document.getElementById('status');
+        compressBtn.disabled = true;
+        
+        const dpi = parseInt(dpiSlider.value);
+        const quality = parseInt(qualitySlider.value) / 100;
+        const scale = dpi / 72.0;
+
+        try {
+            status.innerHTML = '⏳ Menyiapkan proses kompresi...';
+            const { jsPDF } = window.jspdf;
+            let newPdf = null;
+
+            // Proses semua halaman
+            for (let pageNum = 1; pageNum <= loadedPdf.numPages; pageNum++) {
+                status.innerHTML = `⏳ Mengompresi Halaman ${pageNum} dari ${loadedPdf.numPages}...`;
+                
+                const page = await loadedPdf.getPage(pageNum);
+                
+                const viewport = page.getViewport({ scale: scale });
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+
+                await page.render({ canvasContext: context, viewport: viewport }).promise;
+                const imgData = canvas.toDataURL('image/jpeg', quality);
+
+                const originalViewport = page.getViewport({ scale: 1 });
+                const widthPt = originalViewport.width;
+                const heightPt = originalViewport.height;
+                const orientation = widthPt > heightPt ? 'l' : 'p';
+
+                if (pageNum === 1) {
+                    newPdf = new jsPDF({ orientation: orientation, unit: 'pt', format: [widthPt, heightPt] });
+                } else {
+                    newPdf.addPage([widthPt, heightPt], orientation);
+                }
+                
+                newPdf.setPage(pageNum);
+                newPdf.addImage(imgData, 'JPEG', 0, 0, widthPt, heightPt);
+            }
+
+            status.innerHTML = '✅ Berhasil! Menyimpan file...';
+            
+            // Modifikasi nama file keluaran agar ada penanda kompresinya
+            let namaFileBaru = fileAsli.name.replace('.pdf', '') + `_Kompres(${dpi}DPI).pdf`;
+            newPdf.save(namaFileBaru);
+            
+            status.innerHTML = '🎉 Selesai! File berhasil diunduh.';
+        } catch (error) {
+            console.error(error);
+            status.innerHTML = '❌ Terjadi kesalahan saat memproses.';
+        } finally {
+            compressBtn.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
